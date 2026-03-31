@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app)
-
 # ---------------- REGISTER USER ---------------- #
 @app.route('/register', methods=['POST'])
 def register():
@@ -14,11 +13,10 @@ def register():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    query = """INSERT INTO Users (Users_Id, Users_Name, Email, Phone, Address, Password)
-               VALUES (%s, %s, %s, %s, %s, %s)"""
+    query = """INSERT INTO Users (Users_Name, Email, Phone, Address, Password)
+               VALUES (%s, %s, %s, %s, %s)"""
 
     cursor.execute(query, (
-        data['id'],
         data['name'],
         data['email'],
         data['phone'],
@@ -27,8 +25,8 @@ def register():
     ))
 
     conn.commit()
-    return jsonify({"message": "User Registered Successfully"})
 
+    return jsonify({"message": "User Registered Successfully"})
 
 # ---------------- LOGIN ---------------- #
 @app.route('/login', methods=['POST'])
@@ -38,8 +36,11 @@ def login():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    query = "SELECT * FROM Users WHERE Email=%s AND Password=%s"
-    cursor.execute(query, (data['email'], data['password']))
+    cursor.execute(
+        "SELECT Users_Id FROM Users WHERE Email=%s AND Password=%s",
+        (data['email'], data['password'])
+    )
+
     user = cursor.fetchone()
 
     if user:
@@ -48,16 +49,14 @@ def login():
         return jsonify({"message": "Invalid Credentials"})
 
 
-# ---------------- GET PRODUCTS ---------------- #
+# ---------------- PRODUCTS ---------------- #
 @app.route('/products', methods=['GET'])
 def get_products():
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     cursor.execute("SELECT * FROM Products")
-    products = cursor.fetchall()
-
-    return jsonify(products)
+    return jsonify(cursor.fetchall())
 
 
 # ---------------- ADD TO CART ---------------- #
@@ -68,12 +67,11 @@ def add_to_cart():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    query = """INSERT INTO Carts (Carts_Id, Users_Id, Products_Id, Quantity)
-               VALUES (%s, %s, %s, %s)
-               ON DUPLICATE KEY UPDATE Quantity = Quantity + %s"""
-
-    cursor.execute(query, (
-        data['cart_id'],
+    cursor.execute("""
+        INSERT INTO Carts (Users_Id, Products_Id, Quantity)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE Quantity = Quantity + %s
+    """, (
         data['user_id'],
         data['product_id'],
         data['quantity'],
@@ -81,6 +79,7 @@ def add_to_cart():
     ))
 
     conn.commit()
+
     return jsonify({"message": "Added to Cart"})
 
 
@@ -90,17 +89,14 @@ def view_cart(user_id):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
-    query = """
-    SELECT p.Products_Name, p.Price, c.Quantity
-    FROM Carts c
-    JOIN Products p ON c.Products_Id = p.Products_Id
-    WHERE c.Users_Id = %s
-    """
+    cursor.execute("""
+        SELECT p.Products_Name, p.Price, c.Quantity
+        FROM Carts c
+        JOIN Products p ON c.Products_Id = p.Products_Id
+        WHERE c.Users_Id = %s
+    """, (user_id,))
 
-    cursor.execute(query, (user_id,))
-    cart_items = cursor.fetchall()
-
-    return jsonify(cart_items)
+    return jsonify(cursor.fetchall())
 
 
 # ---------------- PLACE ORDER ---------------- #
@@ -112,24 +108,25 @@ def place_order():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Calculate total amount
-    query = """
-    SELECT SUM(p.Price * c.Quantity)
-    FROM Carts c
-    JOIN Products p ON c.Products_Id = p.Products_Id
-    WHERE c.Users_Id = %s
-    """
-    cursor.execute(query, (user_id,))
+    # Total
+    cursor.execute("""
+        SELECT SUM(p.Price * c.Quantity)
+        FROM Carts c
+        JOIN Products p ON c.Products_Id = p.Products_Id
+        WHERE c.Users_Id = %s
+    """, (user_id,))
+    
     total = cursor.fetchone()[0]
 
     # Insert order
-    order_query = """INSERT INTO Orders (Orders_Id, Orders_Date, Total_Amount, Users_Id)
-                     VALUES (%s, %s, %s, %s)"""
+    cursor.execute("""
+        INSERT INTO Orders (Orders_Date, Total_Amount, Users_Id)
+        VALUES (%s, %s, %s)
+    """, (datetime.now(), total, user_id))
 
-    order_id = data['order_id']
-    cursor.execute(order_query, (order_id, datetime.now(), total, user_id))
+    order_id = cursor.lastrowid   # 🔥 AUTO GENERATED
 
-    # Insert order items
+    # Insert items
     cursor.execute("""
         INSERT INTO Order_Items (Orders_Id, Products_Id, Quantity, Price)
         SELECT %s, Products_Id, Quantity, %s
@@ -141,22 +138,32 @@ def place_order():
 
     conn.commit()
 
-    return jsonify({"message": "Order Placed Successfully", "order_id": order_id})
+    return jsonify({"message": "Order Placed", "order_id": order_id})
 
 
-# ---------------- TRACK DELIVERY ---------------- #
+# ---------------- TRACK ---------------- #
 @app.route('/track/<int:order_id>', methods=['GET'])
 def track(order_id):
-    order_date = datetime.now()
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT Orders_Date FROM Orders WHERE Orders_Id = %s
+    """, (order_id,))
+
+    order = cursor.fetchone()
+
+    if not order:
+        return jsonify({"message": "Order not found"})
+
+    order_date = order['Orders_Date']
     delivery_date = order_date + timedelta(days=4)
 
     return jsonify({
         "order_id": order_id,
+        "status": "On the way",
         "order_date": str(order_date),
-        "estimated_delivery": str(delivery_date),
-        "status": "On the way"
+        "delivery_date": str(delivery_date)
     })
-
-
 # ---------------- RUN ---------------- #
 app.run(debug=True)
